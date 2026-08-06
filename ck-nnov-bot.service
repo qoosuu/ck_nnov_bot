@@ -1,0 +1,15 @@
+[Unit]
+Description=ck_nnov_bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ck_nnov_bot
+EnvironmentFile=/opt/ck_nnov_bot/.env
+ExecStart=/opt/ck_nnov_bot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
