@@ -1,5 +1,11 @@
 import asyncio
 import logging
+import sqlite3
+from html import escape
+from pathlib import Path
+
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from topics import TopicStore
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -20,6 +26,36 @@ logging.basicConfig(
 )
 
 router = Router()
+# Ignore the destination group, including topic service messages.
+router.message.filter(F.chat.type == "private")
+topics = None
+
+
+async def _send_media(message: Message, bot: Bot, method, **kwargs) -> bool:
+    user = message.from_user
+    if user is None:
+        return False
+    try:
+        thread_id = await topics.get(bot, GROUP_CHAT_ID, user)
+        try:
+            await method(chat_id=GROUP_CHAT_ID, message_thread_id=thread_id, **kwargs)
+        except TelegramBadRequest as exc:
+            error = exc.message.lower()
+            if "message thread not found" in error or "topic_deleted" in error:
+                await topics.forget(GROUP_CHAT_ID, user.id, thread_id)
+                thread_id = await topics.get(bot, GROUP_CHAT_ID, user)
+            elif "topic_closed" in error:
+                await bot.reopen_forum_topic(
+                    chat_id=GROUP_CHAT_ID, message_thread_id=thread_id,
+                )
+            else:
+                raise
+            await method(chat_id=GROUP_CHAT_ID, message_thread_id=thread_id, **kwargs)
+        return True
+    except (TelegramAPIError, OSError, sqlite3.Error):
+        logging.exception("Could not deliver media for user %s", user.id)
+        await message.answer("Не удалось передать файл. Попробуй отправить его чуть позже 🙏")
+        return False
 
 
 @router.message(CommandStart())
@@ -32,35 +68,34 @@ async def cmd_start(message: Message) -> None:
 
 @router.message(F.photo)
 async def handle_photo(message: Message, bot: Bot) -> None:
-    await bot.send_photo(
-        chat_id=GROUP_CHAT_ID,
+    if not await _send_media(
+        message, bot, bot.send_photo,
         photo=message.photo[-1].file_id,
         caption=_caption(message),
-    )
+    ):
+        return
     await message.answer("Спасибо, фото получено! 📸")
 
 
 @router.message(F.video)
 async def handle_video(message: Message, bot: Bot) -> None:
-    await bot.send_video(
-        chat_id=GROUP_CHAT_ID,
+    if not await _send_media(
+        message, bot, bot.send_video,
         video=message.video.file_id,
         caption=_caption(message),
-    )
+    ):
+        return
     await message.answer("Спасибо, видео получено! 🎥")
 
 
 @router.message(F.video_note)
 async def handle_video_note(message: Message, bot: Bot) -> None:
-    await bot.send_video_note(
-        chat_id=GROUP_CHAT_ID,
+    if not await _send_media(
+        message, bot, bot.send_video_note,
         video_note=message.video_note.file_id,
-    )
-    # Отдельно шлём подпись с отправителем — video_note не поддерживает caption
-    await bot.send_message(
-        chat_id=GROUP_CHAT_ID,
-        text=_caption(message),
-    )
+    ):
+        return
+    # The topic title identifies the sender; circles do not support captions.
     await message.answer("Спасибо, кружочек получен! ⭕")
 
 
@@ -74,12 +109,16 @@ async def handle_other(message: Message) -> None:
 
 def _caption(message: Message) -> str:
     user = message.from_user
-    name = user.full_name
-    username = f" @{user.username}" if user.username else ""
+    name = escape(user.full_name)
+    username = f" @{escape(user.username)}" if user.username else ""
     return f"От: {name}{username}"
 
 
 async def main() -> None:
+    global topics
+    topics = TopicStore(os.getenv(
+        "TOPICS_DB_PATH", str(Path(__file__).resolve().with_name("topics.sqlite3")),
+    ))
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
