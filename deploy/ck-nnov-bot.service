@@ -1,0 +1,17 @@
+[Unit]
+Description=Синий Кот: media and bookings
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ck_nnov_bot
+EnvironmentFile=/opt/ck_nnov_bot/.env
+ExecStart=/opt/ck_nnov_bot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

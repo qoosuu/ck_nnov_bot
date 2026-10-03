@@ -1,0 +1,10 @@
+.env
+*.sqlite3*
+__pycache__/
+venv/
+.venv/
+.DS_Store
+
+previews/
+.env.*
+!.env.example

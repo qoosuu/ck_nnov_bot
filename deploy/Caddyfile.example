@@ -1,0 +1,6 @@
+# Replace with a real domain pointing at your server.
+# Add this block to an existing Caddyfile; do not overwrite unrelated sites.
+booking.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8080
+}

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark"><title>Бронирования · Синий Кот</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div id="gate" class="gate"><span class="brand-icon">к.</span><h1>Синий Кот</h1><p id="gate-message">Проверяем доступ…</p><button id="retry" hidden>Попробовать снова</button></div>
+  <main id="app" hidden>
+    <header class="top"><div class="brand"><span class="brand-icon">к.</span><div><strong>Синий Кот</strong><span class="eyebrow">Рабочая смена</span></div></div><span id="who" class="who"></span></header>
+    <nav class="tabs" aria-label="Разделы"><button id="bookings-tab" class="active">Бронирования</button><button id="admin-tab" hidden>Управление</button></nav>
+    <section id="bookings-view">
+      <div class="title-row"><div><p class="eyebrow">Календарь смен</p><h1 id="day-title">Бронирования</h1></div><button id="today" class="subtle">Сегодня</button></div>
+      <div class="calendar-tools"><label class="date-jump">Перейти к дате <input id="date-jump" type="date" aria-label="Дата смены"></label><span id="hours" class="muted"></span></div>
+      <div id="dates" class="date-strip" aria-label="Выбор смены"></div>
+      <div class="summary"><strong id="summary">Загружаем брони…</strong><button id="refresh" class="link-button">Обновить</button></div>
+      <p id="registration-warning" class="notice" hidden>Рабочий чат ещё не подключён. Отправьте /register от аккаунта владельца в чате сотрудников.</p>
+      <p id="night-hint" class="hint"></p>
+      <div id="tables" class="tables"></div>
+      <p class="footnote">Время московское · Пересечения броней разрешены</p>
+    </section>
+    <section id="admin-view" hidden>
+      <div class="title-row"><div><p class="eyebrow">Только для владельца</p><h1>Управление</h1></div></div>
+      <h2>Открытия приложения</h2><div id="metrics" class="metrics"></div>
+      <section class="panel"><h2>Дайджесты</h2><p id="chat-name" class="muted"></p>
+        <form id="settings-form"><label>Время автоматической сводки, Москва<input id="digest-time" type="time" required></label><button type="submit">Сохранить время</button></form>
+        <p class="hint">Уже отправленная автоматическая сводка повторно не отправится. Для повтора используйте кнопку ниже.</p>
+        <div class="manual-digest"><label>Смена для ручной сводки<input id="digest-date" type="date" required></label><button id="send-digest" class="secondary">Отправить сводку сейчас</button></div>
+        <p id="delivery" class="hint"></p>
+      </section>
+      <section class="panel"><h2>Доступ сотрудников</h2><p class="hint">Участники рабочего чата получают доступ автоматически. Здесь можно отключить или вернуть им доступ. Владелец — 439275668.</p>
+        <div id="people"></div>
+        <form id="access-form"><label>Telegram ID сотрудника<input id="access-id" type="text" inputmode="numeric" pattern="[0-9]+" placeholder="Например, 123456789" required></label><div class="button-row"><button type="submit" name="action" value="allow" class="secondary">Разрешить</button><button type="submit" name="action" value="block" class="danger-outline">Отключить</button></div></form>
+        <p class="hint">Список пополняется после /start, открытия приложения или изменения участия в чате. Разрешение не заменяет членство в рабочем чате.</p>
+      </section>
+      <section class="panel"><h2>Последние действия</h2><div id="audit"></div></section>
+    </section>
+  </main>
+  <dialog id="booking-dialog" aria-labelledby="dialog-title">
+    <form id="booking-form">
+      <div class="dialog-head"><div><p class="eyebrow" id="dialog-kicker">Бронирование</p><h2 id="dialog-title">Новая бронь</h2></div><button type="button" id="close-dialog" class="icon-button" aria-label="Закрыть">×</button></div>
+      <div class="form-grid"><label>Смена<input name="shift_date" type="date" required></label><label>Стол<select name="table_no" required></select></label></div>
+      <label>ФИО гостя<input name="guest_name" maxlength="160" autocomplete="name" placeholder="Имя и фамилия" required></label>
+      <div class="form-grid"><label>Начало<input name="start_time" type="time" required></label><label>Окончание <span class="optional">необязательно</span><input name="end_time" type="time"></label></div>
+      <p id="form-hours" class="hint"></p>
+      <label>Количество гостей<input name="guests" type="number" inputmode="numeric" min="1" max="999" step="1" required></label>
+      <label>Ссылка на гостя <span class="optional">необязательно</span><input name="guest_link" type="text" maxlength="300" placeholder="@username или ссылка"></label>
+      <a id="guest-link" class="guest-link" target="_blank" rel="noopener noreferrer" hidden>Открыть профиль гостя ↗</a>
+      <label>Комментарий <span class="optional">необязательно</span><textarea name="comment" maxlength="1000" rows="3" placeholder="Пожелания, повод, детали"></textarea></label>
+      <p id="booking-meta" class="hint"></p><p id="form-error" class="error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="submit" id="save-booking">Создать бронь</button><button type="button" id="delete-booking" class="danger-outline" hidden>Удалить бронь</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body></html>

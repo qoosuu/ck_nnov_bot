@@ -1,134 +1,63 @@
 import asyncio
+from contextlib import suppress
 import logging
-import sqlite3
-from html import escape
+import os
 from pathlib import Path
+from urllib.parse import urlparse
 
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from topics import TopicStore
-
-from aiogram import Bot, Dispatcher, F, Router
+from aiohttp import web
+from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import MenuButtonCommands
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
-BOT_TOKEN: str = os.environ["BOT_TOKEN"]
-GROUP_CHAT_ID: int = int(os.environ["GROUP_CHAT_ID"])
+import media
+from topics import TopicStore
+from booking.access import Access
+from booking.service import Service
+from booking.store import Store
+from booking.telegram import make_router
+from booking.web import make_app
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-
-router = Router()
-# Ignore the destination group, including topic service messages.
-router.message.filter(F.chat.type == "private")
-topics = None
+ROOT = Path(__file__).resolve().parent
 
 
-async def _send_media(message: Message, bot: Bot, method, **kwargs) -> bool:
-    user = message.from_user
-    if user is None:
-        return False
+async def main():
+    url = os.getenv('MINI_APP_URL', '').rstrip('/')
+    if url:
+        parsed = urlparse(url)
+        if parsed.scheme != 'https' or not parsed.netloc or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
+            raise RuntimeError('MINI_APP_URL must be an HTTPS origin, e.g. https://booking.example.ru')
+    bot = Bot(os.environ['BOT_TOKEN'], default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    media.topics = TopicStore(os.getenv('TOPICS_DB_PATH', str(ROOT / 'topics.sqlite3')))
+    store = Store(os.getenv('BOOKINGS_DB_PATH', str(ROOT / 'bookings.sqlite3')))
+    access = Access(store, bot, url)
+    service = Service(store, bot)
+    dp = Dispatcher(access=access)
+    dp.include_router(make_router(service, access))
+    dp.include_router(media.router)
+    runner = web.AppRunner(make_app(service, access, os.environ['BOT_TOKEN']), access_log=None)
+    tasks = []
     try:
-        thread_id = await topics.get(bot, GROUP_CHAT_ID, user)
-        try:
-            await method(chat_id=GROUP_CHAT_ID, message_thread_id=thread_id, **kwargs)
-        except TelegramBadRequest as exc:
-            error = exc.message.lower()
-            if "message thread not found" in error or "topic_deleted" in error:
-                await topics.forget(GROUP_CHAT_ID, user.id, thread_id)
-                thread_id = await topics.get(bot, GROUP_CHAT_ID, user)
-            elif "topic_closed" in error:
-                await bot.reopen_forum_topic(
-                    chat_id=GROUP_CHAT_ID, message_thread_id=thread_id,
-                )
-            else:
-                raise
-            await method(chat_id=GROUP_CHAT_ID, message_thread_id=thread_id, **kwargs)
-        return True
-    except (TelegramAPIError, OSError, sqlite3.Error):
-        logging.exception("Could not deliver media for user %s", user.id)
-        await message.answer("Не удалось передать файл. Попробуй отправить его чуть позже 🙏")
-        return False
+        await runner.setup()
+        await web.TCPSite(runner, os.getenv('WEB_HOST', '127.0.0.1'), int(os.getenv('WEB_PORT', '8080'))).start()
+        # Never advertise the app globally: menus are assigned per private chat.
+        await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        tasks = [asyncio.create_task(service.worker()), asyncio.create_task(access.refresh_menus())]
+        logging.info('Photo forwarding and booking modules started')
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
+        await runner.cleanup()
+        await bot.session.close()
 
 
-@router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
-    await message.answer(
-        "Привет! 👋\n\n"
-        "Присылай фото, видео или кружочки — я передам их куда надо 🎬"
-    )
-
-
-@router.message(F.photo)
-async def handle_photo(message: Message, bot: Bot) -> None:
-    if not await _send_media(
-        message, bot, bot.send_photo,
-        photo=message.photo[-1].file_id,
-        caption=_caption(message),
-    ):
-        return
-    await message.answer("Спасибо, фото получено! 📸")
-
-
-@router.message(F.video)
-async def handle_video(message: Message, bot: Bot) -> None:
-    if not await _send_media(
-        message, bot, bot.send_video,
-        video=message.video.file_id,
-        caption=_caption(message),
-    ):
-        return
-    await message.answer("Спасибо, видео получено! 🎥")
-
-
-@router.message(F.video_note)
-async def handle_video_note(message: Message, bot: Bot) -> None:
-    if not await _send_media(
-        message, bot, bot.send_video_note,
-        video_note=message.video_note.file_id,
-    ):
-        return
-    # The topic title identifies the sender; circles do not support captions.
-    await message.answer("Спасибо, кружочек получен! ⭕")
-
-
-@router.message()
-async def handle_other(message: Message) -> None:
-    await message.answer(
-        "Я принимаю только фото, видео и кружочки 🙏\n"
-        "Отправь один из этих форматов."
-    )
-
-
-def _caption(message: Message) -> str:
-    user = message.from_user
-    name = escape(user.full_name)
-    username = f" @{escape(user.username)}" if user.username else ""
-    return f"От: {name}{username}"
-
-
-async def main() -> None:
-    global topics
-    topics = TopicStore(os.getenv(
-        "TOPICS_DB_PATH", str(Path(__file__).resolve().with_name("topics.sqlite3")),
-    ))
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    dp = Dispatcher()
-    dp.include_router(router)
-
-    logging.info("ck_nnov_bot starting...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
