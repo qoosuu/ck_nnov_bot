@@ -24,7 +24,7 @@ function signed(id=439275668) {
     await page.screenshot({path:'previews/mobile.png',fullPage:false});
     const table17=page.locator('.table-card').nth(16);await table17.locator('.add-booking').click();
     await page.locator('[name=guest_name]').fill('Тестовая бронь <script>');
-    await page.locator('[name=start_time]').fill('01:00');await page.locator('[name=guests]').fill('7');await page.locator('[name=comment]').fill('Проверка ночной брони');
+    await page.locator('#booking-form [name=start_time]').fill('01:00');await page.locator('[name=guests]').fill('7');await page.locator('[name=comment]').fill('Проверка ночной брони');
     await page.screenshot({path:'previews/booking-form.png',fullPage:false});
     await page.locator('#save-booking').click();await page.locator('#booking-dialog').waitFor({state:'hidden'});
     await table17.locator('.booking').waitFor();assert.match(await table17.innerText(),/01:00/);
@@ -41,6 +41,36 @@ function signed(id=439275668) {
     await page.locator('#date-jump').fill('2026-10-04');await page.locator('#date-jump').dispatchEvent('change');await page.getByText('Броней: 0 · Гостей: 0',{exact:true}).waitFor();assert.equal(await page.locator('.table-card').count(),17);
     const unauthorized=await browser.newContext();await unauthorized.route('https://telegram.org/js/telegram-web-app.js',r=>r.fulfill({contentType:'text/javascript',body:''}));const noauth=await unauthorized.newPage();await noauth.goto('http://127.0.0.1:8765');await noauth.getByText('Откройте «Бронирования»',{exact:false}).waitFor();assert.equal(await noauth.locator('.table-card').count(),0);
     const staff=await browser.newContext();await staff.route('https://telegram.org/js/telegram-web-app.js',r=>r.fulfill({contentType:'text/javascript',body:''}));await staff.addInitScript(raw=>window.Telegram={WebApp:{initData:raw,ready(){},expand(){}}},signed(777));const sp=await staff.newPage();await sp.goto('http://127.0.0.1:8765');await sp.locator('.table-card').last().waitFor();assert.equal(await sp.locator('#admin-tab').isVisible(),false);
-    assert.deepEqual(errors,[]);console.log('PASS: 17 tables, mobile overflow, create/edit/delete overnight booking, owner settings/access/digest, date switch, unauthorized gate, staff view; no JS errors.');
+    // Owner closes a full shift; staff see the reason and existing bookings are read-only.
+    await page.locator('#admin-tab').click();
+    await page.locator('#ban-date').fill('2026-10-03');await page.locator('#ban-date').dispatchEvent('change');
+    await page.locator('#ban-full').click();await page.locator('#ban-form [name=reason]').fill('Закрытое мероприятие <test>');
+    await page.locator('#ban-form button[type=submit]').click();await page.locator('#ban-list .person').waitFor();
+    await sp.locator('#refresh').click();await sp.locator('#ban-notice').filter({hasText:'Закрытое мероприятие'}).waitFor();
+    assert.equal(await sp.locator('.add-booking:disabled').count(),17);
+    await sp.locator('.booking').first().click();await sp.locator('#form-ban').filter({hasText:'Закрытое мероприятие'}).waitFor();
+    assert.equal(await sp.locator('#save-booking').isDisabled(),true);
+    assert.equal(await sp.locator('[name=guest_name]').isDisabled(),true);
+    assert.equal(await sp.locator('#delete-booking').isEnabled(),true);
+    await sp.locator('#close-dialog').click();
+    await sp.setViewportSize({width:390,height:844});await sp.screenshot({path:'previews/ban-staff.png',fullPage:false});
+    await page.setViewportSize({width:390,height:844});await page.screenshot({path:'previews/ban-admin.png',fullPage:false});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.locator('#ban-list button').click();await page.locator('#ban-list').getByText('В эту смену запретов нет.').waitFor();
+    await sp.locator('#refresh').click();await sp.locator('#ban-notice').waitFor({state:'hidden'});
+    assert.equal(await sp.locator('.add-booking:disabled').count(),0);
+    // Partial interval: missing end overlaps, exact end boundary is accepted.
+    await page.locator('#ban-start').fill('20:00');await page.locator('#ban-end').fill('22:00');
+    await page.locator('#ban-form button[type=submit]').click();await page.locator('#ban-list .person').waitFor();
+    await sp.locator('.table-card').nth(16).locator('.add-booking').click();
+    await sp.locator('[name=guest_name]').fill('До мероприятия');
+    await sp.locator('#booking-form [name=start_time]').fill('19:00');
+    await sp.locator('#form-ban').filter({hasText:'Закрытое мероприятие'}).waitFor();
+    assert.equal(await sp.locator('#save-booking').isDisabled(),true);
+    await sp.locator('#booking-form [name=end_time]').fill('20:00');
+    await sp.locator('#save-booking').click();await sp.locator('#booking-dialog').waitFor({state:'hidden'});
+    assert.match(await sp.locator('.table-card').nth(16).innerText(),/До мероприятия/);
+    await page.locator('#ban-list button').click();await page.locator('#ban-list').getByText('В эту смену запретов нет.').waitFor();
+    assert.deepEqual(errors,[]);console.log('PASS: 17 tables, mobile overflow, create/edit/delete overnight booking, owner settings/access/digest, date switch, unauthorized gate, staff view, full/partial booking bans, reason display, locked existing booking, removal, exact boundary; no JS errors.');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

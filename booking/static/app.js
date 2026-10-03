@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const tg = window.Telegram?.WebApp;
-const state = {me: null, date: null, bookings: [], editing: null, busy: false, tab: 'bookings', sequence: 0};
+const state = {me: null, date: null, bookings: [], bans: [], formBans: [], formLoading: false, formSequence: 0, editing: null, busy: false, tab: 'bookings', sequence: 0};
 const sessionId = crypto.randomUUID();
 let toastTimer, pendingMutation = null;
 function node(tag, cls, text) { const n = document.createElement(tag); if(cls) n.className = cls; if(text !== undefined) n.textContent = text; return n; }
@@ -47,7 +47,37 @@ function renderDates() {
   }
   requestAnimationFrame(()=> { const selected = $('dates').querySelector('.selected'); $('dates').scrollLeft = Math.max(0,selected.offsetLeft - $('dates').offsetLeft - 120); });
 }
+function minute(value) { const [h,m]=value.split(':').map(Number); return h*60+m+(h<18?1440:0); }
+function banText(b) { return `Смена ${b.shift_date}: с ${b.start_time} до ${b.end_time} брони не принимаем. ${b.reason}`; }
+function fullyClosed() {
+  let end=1080;
+  for(const b of state.bans) { if(minute(b.start_time)>end) return false; end=Math.max(end,minute(b.end_time)); }
+  return end>=minute(isLate(state.date)?'03:00':'00:00');
+}
+function checkFormBan() {
+  const f=$('booking-form'), start=f.elements.start_time.value, end=f.elements.end_time.value;
+  const hits=start?state.formBans.filter(b=>minute(start)<minute(b.end_time) && minute(end||(isLate(f.elements.shift_date.value)?'03:00':'00:00'))>minute(b.start_time)):[];
+  const message=state.editing?.restriction || (state.formLoading?'Проверяем запреты…':hits.map(banText).join('\n'));
+  $('form-ban').textContent=message+(hits.length && !end?' Укажите окончание до запрета или выберите другое время.':'');
+  $('form-ban').hidden=!message;
+  $('save-booking').disabled=state.busy || !!message;
+  for(const field of f.querySelectorAll('input,select,textarea')) field.disabled=!!state.editing?.restriction;
+}
+async function loadFormBans() {
+  const seq=++state.formSequence, value=$('booking-form').elements.shift_date.value;
+  formHours(); state.formLoading=true; checkFormBan();
+  try {
+    const d=await api('bookings?date='+encodeURIComponent(value));
+    if(seq!==state.formSequence)return;
+    state.formBans=d.bans;
+    if(state.editing && state.editing.shift_date===value) state.editing.restriction=d.bookings.find(b=>b.id===state.editing.id)?.restriction || '';
+    state.formLoading=false; checkFormBan();
+  } catch(e) { if(seq===state.formSequence) { $('form-ban').textContent=e.message+' Закройте карточку и повторите попытку.'; $('form-ban').hidden=false; } }
+}
 function renderTables() {
+  $('ban-notice').hidden=!state.bans.length;
+  $('ban-notice').replaceChildren(...state.bans.map(b=>node('p','',banText(b))));
+  const closed=fullyClosed();
   $('tables').replaceChildren();
   const total=state.bookings.reduce((n,b)=>n+b.guests,0);
   $('summary').textContent = `Броней: ${state.bookings.length} · Гостей: ${total}`;
@@ -60,11 +90,13 @@ function renderTables() {
       button.type='button'; button.setAttribute('aria-label',`Бронь: ${b.guest_name}, стол ${t}, ${b.start_time}`);
       top.append(node('span','booking-time',b.start_time+(b.end_time?'–'+b.end_time:'')),node('span','booking-guests',`${b.guests} чел.`));
       button.append(top,node('span','booking-name',b.guest_name));
+      if(b.restriction) button.append(node('span','booking-comment','Изменение закрыто: '+b.restriction));
       if(b.comment) button.append(node('span','booking-comment',b.comment));
       button.onclick=()=>openBooking(b); card.append(button);
     }
-    if(!items.length) card.append(node('p','empty-text','Пока тихо. Можно бронировать.'));
+    if(!items.length) card.append(node('p','empty-text',closed?'Бронирование на смену закрыто.':'Пока тихо. Можно бронировать.'));
     const add=node('button','add-booking'); add.type='button'; add.append(node('span','plus','+'),node('span','',items.length?'Добавить ещё одну бронь':'Добавить бронь'));
+    add.disabled=closed;
     add.querySelector('.plus').setAttribute('aria-hidden','true'); add.onclick=()=>openBooking(null,t); card.append(add); $('tables').append(card);
   }
 }
@@ -73,10 +105,10 @@ async function loadBookings(quiet=false) {
   try {
     const result=await api('bookings?date='+encodeURIComponent(selected));
     if(seq!==state.sequence || selected!==state.date) return;
-    state.bookings=result.bookings; renderTables();
+    state.bookings=result.bookings; state.bans=result.bans; renderTables();
   } catch(e) { if(!quiet) toast(e.message); }
 }
-async function selectDate(value) { if(!value) return; state.date=value; state.bookings=[]; renderDates(); $('tables').replaceChildren(); $('summary').textContent='Загружаем брони…'; await loadBookings(); }
+async function selectDate(value) { if(!value) return; state.date=value; state.bookings=[]; state.bans=[]; $('ban-notice').hidden=true; renderDates(); $('tables').replaceChildren(); $('summary').textContent='Загружаем брони…'; await loadBookings(); }
 function openBooking(b, table=1) {
   state.editing=b; pendingMutation=null;
   const f=$('booking-form'); f.reset(); $('form-error').hidden=true;
@@ -89,16 +121,16 @@ function openBooking(b, table=1) {
   $('guest-link').hidden=!b?.guest_link;
   if(b?.guest_link) $('guest-link').href=b.guest_link;
   $('booking-meta').textContent=b?`Создал: ${b.created_by}. Последнее изменение: ${new Date(b.updated_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})}, сотрудник ${b.updated_by}.`:'';
-  formHours(); $('booking-dialog').showModal();
+  formHours(); $('booking-dialog').showModal(); loadFormBans();
 }
-function setBusy(value) { state.busy=value; for(const button of $('booking-form').querySelectorAll('button')) button.disabled=value; }
+function setBusy(value) { state.busy=value; for(const button of $('booking-form').querySelectorAll('button')) button.disabled=value; checkFormBan(); }
 async function mutation(path, method, data) {
   const fingerprint=JSON.stringify([path,method,data]);
   if(!pendingMutation || pendingMutation.fingerprint!==fingerprint) pendingMutation={fingerprint,key:crypto.randomUUID()};
   const result=await api(path,method,data,pendingMutation.key); pendingMutation=null; return result;
 }
 $('booking-form').onsubmit=async event=> {
-  event.preventDefault(); if(state.busy) return;
+  event.preventDefault(); if(state.busy || $('save-booking').disabled) return;
   const f=$('booking-form'), data=Object.fromEntries(new FormData(f)); data.table_no=Number(data.table_no); data.guests=Number(data.guests); data.end_time=data.end_time||null;
   if(state.editing) data.version=state.editing.version;
   setBusy(true); $('form-error').hidden=true;
@@ -116,15 +148,18 @@ $('delete-booking').onclick=async()=> {
 };
 $('close-dialog').onclick=()=>{if(!state.busy) $('booking-dialog').close();};
 $('booking-dialog').addEventListener('cancel',event=>{if(state.busy)event.preventDefault();});
-$('booking-form').elements.shift_date.onchange=formHours;
+$('booking-form').elements.shift_date.onchange=loadFormBans;
+for(const key of ['start_time','end_time']) $('booking-form').elements[key].oninput=checkFormBan;
 for(let i=1;i<=17;i++){const o=node('option','',`Стол №${i}`);o.value=String(i);$('booking-form').elements.table_no.append(o);}
 $('date-jump').onchange=e=>selectDate(e.target.value);
 $('today').onclick=async()=>{try{const me=await api('me'); await selectDate(me.shift_date);}catch(e){toast(e.message);}};
 $('refresh').onclick=()=>loadBookings();
-function switchTab(which) { state.tab=which; $('bookings-view').hidden=which!=='bookings'; $('admin-view').hidden=which!=='admin'; $('bookings-tab').classList.toggle('active',which==='bookings'); $('admin-tab').classList.toggle('active',which==='admin'); if(which==='admin') loadAdmin(); }
+function switchTab(which) { state.tab=which; $('bookings-view').hidden=which!=='bookings'; $('admin-view').hidden=which!=='admin'; $('bookings-tab').classList.toggle('active',which==='bookings'); $('admin-tab').classList.toggle('active',which==='admin'); if(which==='admin') loadAdmin(); else loadBookings(); }
 $('bookings-tab').onclick=()=>switchTab('bookings'); $('admin-tab').onclick=()=>switchTab('admin');
 async function loadAdmin() {
   try {
+    if(!$('ban-date').value) { $('ban-date').value=state.date; $('ban-end').value=isLate(state.date)?'03:00':'00:00'; }
+    await loadBans();
     const d=await api('admin/overview'); $('metrics').replaceChildren();
     for(const metric of d.metrics) { const card=node('div','metric'); card.append(node('span','',metric.days===1?'Сегодня':`За ${metric.days} дней`),node('strong','',String(metric.opens)),node('small','',`Сотрудников: ${metric.people}`)); $('metrics').append(card); }
     $('chat-name').textContent=d.chat_id?`Рабочий чат: ${d.chat_title} (${d.chat_id})`:'Рабочий чат не зарегистрирован.';
@@ -137,10 +172,36 @@ async function loadAdmin() {
       $('people').append(row);
     }
     if(!d.people.length)$('people').append(node('p','hint','Сотрудники ещё не открывали приложение.'));
-    const actions={create:'Создал бронь',update:'Изменил бронь',delete:'Удалил бронь',register:'Зарегистрировал чат',manual_digest:'Запросил сводку',digest_time:'Изменил время сводки',block:'Отключил доступ',unblock:'Вернул доступ'};
+    const actions={ban_create:'Добавил запрет на бронирование',ban_delete:'Снял запрет на бронирование',create:'Создал бронь',update:'Изменил бронь',delete:'Удалил бронь',register:'Зарегистрировал чат',manual_digest:'Запросил сводку',digest_time:'Изменил время сводки',block:'Отключил доступ',unblock:'Вернул доступ'};
     $('audit').replaceChildren(); for(const a of d.audit){const row=node('div','audit-row',`${actions[a.action]||a.action}${a.booking_id?' #'+a.booking_id:''}`);row.append(node('small','',`${new Date(a.created_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})} · ${a.actor}`));$('audit').append(row);}
   }catch(e){toast(e.message);}
 }
+let banSequence=0;
+async function loadBans() {
+  const seq=++banSequence, date=$('ban-date').value;
+  const d=await api('bookings?date='+encodeURIComponent(date));
+  if(seq!==banSequence)return;
+  $('ban-list').replaceChildren();
+  for(const ban of d.bans) {
+    const row=node('div','person'), remove=node('button','danger-outline','Снять запрет');
+    row.append(node('p','',banText(ban)),remove);
+    remove.type='button'; remove.onclick=async()=> {
+      if(!confirm('Снять запрет? '+banText(ban)))return;
+      remove.disabled=true;
+      try { await api('admin/bans/'+ban.id,'DELETE'); await loadBans(); toast('Запрет снят'); }
+      catch(e) { toast(e.message); remove.disabled=false; }
+    };
+    $('ban-list').append(row);
+  }
+  if(!d.bans.length)$('ban-list').append(node('p','hint','В эту смену запретов нет.'));
+}
+$('ban-date').onchange=()=> { $('ban-end').value=isLate($('ban-date').value)?'03:00':'00:00'; loadBans().catch(e=>toast(e.message)); };
+$('ban-full').onclick=()=> { $('ban-start').value='18:00'; $('ban-end').value=isLate($('ban-date').value)?'03:00':'00:00'; };
+$('ban-form').onsubmit=async event=> {
+  event.preventDefault(); const button=event.submitter; button.disabled=true;
+  try { await api('admin/bans','POST',Object.fromEntries(new FormData($('ban-form')))); await loadBans(); toast('Запрет сохранён'); }
+  catch(e) {toast(e.message);} finally {button.disabled=false;}
+};
 $('settings-form').onsubmit=async event=>{event.preventDefault();const b=event.submitter;b.disabled=true;try{await api('admin/settings','PUT',{digest_time:$('digest-time').value});toast('Время сводки сохранено');}catch(e){toast(e.message);}finally{b.disabled=false;}};
 $('send-digest').onclick=async()=>{const date=$('digest-date').value;if(!date || !confirm('Отправить сводку за '+dateTitle(date)+' в рабочий чат?'))return;const b=$('send-digest');b.disabled=true;try{const d=await api('admin/digest','POST',{shift_date:date});toast(d.queued?'Сводка поставлена в очередь отправки':'На эту смену нет броней — сводка не отправлена');await loadAdmin();}catch(e){toast(e.message);}finally{b.disabled=false;}};
 $('access-form').onsubmit=async event=>{event.preventDefault();const b=event.submitter;b.disabled=true;try{await api('admin/access','PUT',{user_id:Number($('access-id').value),blocked:b.value==='block'});$('access-id').value='';toast('Доступ обновлён');await loadAdmin();}catch(e){toast(e.message);}finally{b.disabled=false;}};

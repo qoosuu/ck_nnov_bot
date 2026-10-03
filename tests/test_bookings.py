@@ -122,6 +122,71 @@ class ServiceTests(Fixture):
     async def test_reregister(self):
         self.now=self.now.replace(hour=17);self.create();self.s.register(-10099,'Другой чат',OWNER_ID);self.assertEqual(self.texts(),[]);self.s.schedule();self.assertEqual(len(self.texts()),1)
 
+class BanTests(Fixture):
+    def ban(self, **changes):
+        return self.s.add_ban(OWNER_ID, dict(shift_date='2026-10-02', start_time='20:00', end_time='22:00', reason='Закрытое мероприятие') | changes)['ban']
+
+    async def test_boundaries_and_missing_end(self):
+        self.ban()
+        self.create(start_time='18:00', end_time='20:00')
+        self.create(start_time='22:00')
+        for start, end in [('19:00', None), ('19:00','21:00'), ('20:00','21:00'), ('21:00','22:00'), ('18:00','23:00')]:
+            with self.subTest(start=start,end=end), self.assertRaisesRegex(Problem, 'Закрытое мероприятие'):
+                self.create(start_time=start,end_time=end)
+        self.assertEqual(len(self.s.list_bookings('2026-10-02')),2)
+
+    async def test_night_intervals_and_other_shift(self):
+        self.ban(start_time='23:00',end_time='01:00')
+        self.create(start_time='01:00')
+        self.create(shift_date='2026-10-03',start_time='00:30')
+        with self.assertRaises(Problem): self.create(start_time='00:30',end_time='02:00')
+        self.ban(start_time='01:00',end_time='03:00')
+        with self.assertRaises(Problem): self.create(start_time='02:59')
+
+    async def test_existing_locked_delete_allowed(self):
+        b=self.create()
+        ban=self.ban()
+        row=self.s.day_view('2026-10-02')['bookings'][0]
+        self.assertIn('Закрытое мероприятие',row['restriction'])
+        for actor in [55, OWNER_ID]:
+            with self.assertRaises(Problem):
+                self.s.mutate(actor,'update',booking(shift_date='2026-10-03',version=1),str(uuid4()),b['id'])
+        self.s.remove_ban(OWNER_ID,ban['id'])
+        self.assertEqual(self.s.day_view('2026-10-02')['bookings'][0]['restriction'],'')
+        self.s.mutate(55,'update',booking(guests=5,version=1),str(uuid4()),b['id'])
+        self.ban()
+        self.s.mutate(55,'delete',{'version':2},str(uuid4()),b['id'])
+        self.assertEqual(self.s.list_bookings('2026-10-02'),[])
+
+    async def test_changed_target_and_stale_form(self):
+        b=self.create(start_time='22:00')
+        self.ban()
+        with self.assertRaises(Problem):
+            self.s.mutate(55,'update',booking(version=1),str(uuid4()),b['id'])
+        self.assertEqual(self.s.list_bookings('2026-10-02')[0]['version'],1)
+
+    async def test_validation_authorization_full_shift(self):
+        for changes in [{'reason':''},{'reason':' '*3},{'reason':'x'*501},{'end_time':None},{'start_time':'17:00'},{'end_time':'04:00'},{'end_time':'19:00'},{'shift_date':'bad'},{'shift_date':'2026-10-04','end_time':'01:00'}]:
+            with self.subTest(changes=changes), self.assertRaises(Problem): self.ban(**changes)
+        for action in [lambda:self.s.add_ban(55,{}), lambda:self.s.remove_ban(55,1)]:
+            with self.assertRaises(Problem) as e: action()
+            self.assertEqual(e.exception.status,403)
+        self.ban(start_time='18:00',end_time='03:00')
+        for time in ['18:00','23:59','00:00','02:59']:
+            with self.assertRaises(Problem):self.create(start_time=time)
+
+    async def test_persistence_dedup_and_audit(self):
+        b=self.create(start_time='22:00')
+        ban=self.ban();self.assertEqual(self.ban()['id'],ban['id'])
+        self.s=Service(Store(self.store.path),self.bot,now=lambda:self.now)
+        self.assertEqual(len(self.s.day_view('2026-10-02')['bans']),1)
+        self.assertEqual(self.s.list_bookings('2026-10-02')[0]['id'],b['id'])
+        with self.assertRaises(Problem):self.create()
+        self.s.remove_ban(OWNER_ID,ban['id']);self.s.remove_ban(OWNER_ID,ban['id'])
+        self.create()
+        with self.store.connect() as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT action FROM audit WHERE action LIKE 'ban_%'")],['ban_create','ban_delete'])
+
 class HTTPTests(Fixture):
     async def asyncSetUp(self):
         await super().asyncSetUp();self.access=Access(self.store,self.bot,'https://example.org');self.client=TestClient(TestServer(make_app(self.s,self.access,TOKEN)));await self.client.start_server()
@@ -136,6 +201,17 @@ class HTTPTests(Fixture):
         for method,path in [('get','/api/bookings?date=2026-10-02'),('delete',f"/api/bookings/{created['id']}")]:
             response=await getattr(self.client,method)(path,headers=headers);self.assertEqual(response.status,403)
         response=await self.client.get('/api/admin/overview',headers={'Authorization':'tma '+signed()});self.assertEqual(response.status,200)
+    async def test_ban_routes_staff_enforcement(self):
+        owner={'Authorization':'tma '+signed()};staff={'Authorization':'tma '+signed(55)}
+        payload=dict(shift_date='2026-10-02',start_time='18:00',end_time='03:00',reason='Частная вечеринка')
+        r=await self.client.post('/api/admin/bans',headers=staff,json=payload);self.assertEqual(r.status,403)
+        r=await self.client.post('/api/admin/bans',headers=owner,json=payload);self.assertEqual(r.status,200);ban=(await r.json())['ban']
+        r=await self.client.get('/api/bookings?date=2026-10-02',headers=staff);self.assertEqual((await r.json())['bans'][0]['reason'],payload['reason'])
+        r=await self.client.post('/api/bookings',headers=staff|{'Idempotency-Key':str(uuid4())},json=booking());self.assertEqual(r.status,409);self.assertIn(payload['reason'],(await r.json())['error'])
+        r=await self.client.delete('/api/admin/bans/'+str(ban['id']),headers=staff);self.assertEqual(r.status,403)
+        r=await self.client.delete('/api/admin/bans/'+str(ban['id']),headers=owner);self.assertEqual(r.status,200)
+        r=await self.client.post('/api/bookings',headers=staff|{'Idempotency-Key':str(uuid4())},json=booking());self.assertEqual(r.status,200)
+
     async def test_static_and_validation(self):
         response=await self.client.get('/');self.assertEqual(response.status,200)
         response=await self.client.get('/static/../../bookings.sqlite3');self.assertEqual(response.status,404)

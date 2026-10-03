@@ -19,11 +19,24 @@
       <div class="summary"><strong id="summary">Загружаем брони…</strong><button id="refresh" class="link-button">Обновить</button></div>
       <p id="registration-warning" class="notice" hidden>Рабочий чат ещё не подключён. Отправьте /register от аккаунта владельца в чате сотрудников.</p>
       <p id="night-hint" class="hint"></p>
+      <div id="ban-notice" class="notice" role="status" hidden></div>
       <div id="tables" class="tables"></div>
       <p class="footnote">Время московское · Пересечения броней разрешены</p>
     </section>
     <section id="admin-view" hidden>
       <div class="title-row"><div><p class="eyebrow">Только для владельца</p><h1>Управление</h1></div></div>
+      <section class="panel"><h2>Запреты на бронирование</h2>
+        <p class="hint">Действуют на все столы, включая владельца. Ночные часы относятся к выбранной смене. Существующие брони сохраняются, их можно отменить, но нельзя редактировать. Без окончания бронь учитывается до закрытия.</p>
+        <form id="ban-form">
+          <label>Дата смены<input id="ban-date" name="shift_date" type="date" required></label>
+          <div class="form-grid"><label>С<input id="ban-start" name="start_time" type="time" value="18:00" required></label><label>До<input id="ban-end" name="end_time" type="time" required></label></div>
+          <button id="ban-full" type="button" class="secondary">Выбрать всю смену</button>
+          <label>Причина запрета<textarea name="reason" maxlength="500" rows="2" placeholder="Например, закрытое мероприятие" required></textarea></label>
+          <button type="submit">Запретить бронирование</button>
+        </form>
+        <p class="hint">Чтобы изменить интервал или причину, снимите запрет и добавьте новый.</p>
+        <div id="ban-list"></div>
+      </section>
       <h2>Открытия приложения</h2><div id="metrics" class="metrics"></div>
       <section class="panel"><h2>Дайджесты</h2><p id="chat-name" class="muted"></p>
         <form id="settings-form"><label>Время автоматической сводки, Москва<input id="digest-time" type="time" required></label><button type="submit">Сохранить время</button></form>
@@ -45,7 +58,7 @@
       <div class="form-grid"><label>Смена<input name="shift_date" type="date" required></label><label>Стол<select name="table_no" required></select></label></div>
       <label>ФИО гостя<input name="guest_name" maxlength="160" autocomplete="name" placeholder="Имя и фамилия" required></label>
       <div class="form-grid"><label>Начало<input name="start_time" type="time" required></label><label>Окончание <span class="optional">необязательно</span><input name="end_time" type="time"></label></div>
-      <p id="form-hours" class="hint"></p>
+      <p id="form-hours" class="hint"></p><p id="form-ban" class="notice" role="status" hidden></p>
       <label>Количество гостей<input name="guests" type="number" inputmode="numeric" min="1" max="999" step="1" required></label>
       <label>Ссылка на гостя <span class="optional">необязательно</span><input name="guest_link" type="text" maxlength="300" placeholder="@username или ссылка"></label>
       <a id="guest-link" class="guest-link" target="_blank" rel="noopener noreferrer" hidden>Открыть профиль гостя ↗</a>

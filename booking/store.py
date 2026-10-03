@@ -25,6 +25,12 @@ class Store:
                     updated_by INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     version INTEGER NOT NULL DEFAULT 1, deleted_at TEXT);
                 CREATE INDEX IF NOT EXISTS bookings_day ON bookings(shift_date, deleted_at);
+                CREATE TABLE IF NOT EXISTS booking_bans(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, shift_date TEXT NOT NULL,
+                    start_time TEXT NOT NULL, end_time TEXT NOT NULL, reason TEXT NOT NULL,
+                    created_by INTEGER NOT NULL, created_at TEXT NOT NULL,
+                    UNIQUE(shift_date,start_time,end_time,reason));
+                CREATE INDEX IF NOT EXISTS booking_bans_day ON booking_bans(shift_date);
                 CREATE TABLE IF NOT EXISTS audit(
                     id INTEGER PRIMARY KEY AUTOINCREMENT, actor INTEGER NOT NULL,
                     action TEXT NOT NULL, booking_id INTEGER, before_json TEXT, after_json TEXT,

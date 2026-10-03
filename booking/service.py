@@ -7,7 +7,7 @@ from uuid import UUID
 
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from .domain import (OWNER_ID, Problem, booking_text, clock, current_shift, day,
-                     digest_texts, due_at, in_notice_window, now_msk, shift_end, validate_booking)
+                     booking_datetime, clean_text, digest_texts, due_at, in_notice_window, now_msk, shift_end, validate_booking)
 from .store import Store
 
 
@@ -76,6 +76,61 @@ class Service:
         with self.store.connect() as db:
             return Store.rows(db, d)
 
+    @staticmethod
+    def bans(db, date_string):
+        return [dict(r) for r in db.execute(
+            "SELECT * FROM booking_bans WHERE shift_date=? ORDER BY start_time < '18:00', start_time, id",
+            (str(date_string),))]
+
+    @staticmethod
+    def ban_message(ban):
+        return (f"В смену {day(ban['shift_date']).strftime('%d.%m.%Y')} "
+                f"с {ban['start_time']} до {ban['end_time']} брони не принимаем: {ban['reason']}")
+
+    def conflicts(self, db, booking):
+        d = day(booking['shift_date'])
+        start = booking_datetime(d, booking['start_time'])
+        end = booking_datetime(d, booking['end_time']) if booking.get('end_time') else shift_end(d)
+        return [b for b in self.bans(db, d)
+                if start < booking_datetime(d, b['end_time']) and end > booking_datetime(d, b['start_time'])]
+
+    def day_view(self, date_string):
+        d = day(date_string)
+        with self.store.connect() as db:
+            db.execute('BEGIN')
+            bookings = Store.rows(db, d)
+            for b in bookings:
+                b['restriction'] = '\n'.join(self.ban_message(x) for x in self.conflicts(db, b))
+            return dict(bookings=bookings, bans=self.bans(db, d))
+
+    def add_ban(self, actor, data):
+        self.require_owner(actor)
+        # Reuse shift validation, including the following calendar day's closing time.
+        fields = validate_booking(dict(data, guest_name='Запрет', guest_link='', guests=1, table_no=1, comment=''))
+        if not fields['end_time']:
+            raise Problem('Укажите окончание запрета.')
+        reason = clean_text(data, 'reason', 'Причина запрета', 500, True)
+        values = (fields['shift_date'], fields['start_time'], fields['end_time'], reason)
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            cursor = db.execute('''INSERT OR IGNORE INTO booking_bans
+                (shift_date,start_time,end_time,reason,created_by,created_at) VALUES (?,?,?,?,?,?)''',
+                (*values, actor, self.now().isoformat()))
+            row = dict(db.execute('SELECT * FROM booking_bans WHERE shift_date=? AND start_time=? AND end_time=? AND reason=?', values).fetchone())
+            if cursor.rowcount:
+                Store.audit(db, actor, 'ban_create', self.now(), after=row)
+            return {'ban': row}
+
+    def remove_ban(self, actor, ban_id):
+        self.require_owner(actor)
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM booking_bans WHERE id=?', (ban_id,)).fetchone()
+            if row:
+                db.execute('DELETE FROM booking_bans WHERE id=?', (ban_id,))
+                Store.audit(db, actor, 'ban_delete', self.now(), before=dict(row))
+        return {'ok': True}
+
     def mutate(self, actor, operation, data, request_id, booking_id=None):
         try:
             UUID(request_id)
@@ -107,6 +162,10 @@ class Service:
                 after = dict(before, deleted_at=now.isoformat(), version=before['version'] + 1)
             else:
                 fields = validate_booking(data)
+                conflicts = self.conflicts(db, fields) + (self.conflicts(db, before) if before else [])
+                if conflicts:
+                    raise Problem(self.ban_message(conflicts[0]) +
+                                  ' Создание и изменение запрещены. Бронь без окончания учитывается до закрытия бара.', 409)
                 if operation == 'create':
                     fields.update(created_by=actor, updated_by=actor, created_at=now.isoformat(), updated_at=now.isoformat())
                     columns = ','.join(fields)

@@ -65,7 +65,7 @@ def make_app(service, access, token):
         return web.json_response({'ok': True})
 
     async def bookings(request):
-        return web.json_response({'bookings': service.list_bookings(request.query.get('date'))})
+        return web.json_response(service.day_view(request.query.get('date')))
 
     async def mutate(request):
         data = await body(request)
@@ -94,6 +94,14 @@ def make_app(service, access, token):
             logging.info('Menu update unavailable for user %s', data['user_id'])
         return web.json_response({'ok': True})
 
+    async def bans(request):
+        if request.method == 'POST':
+            return web.json_response(service.add_ban(request['user']['id'], await body(request)))
+        raw_id = request.match_info['id']
+        if not raw_id.isdecimal():
+            raise Problem('Некорректный номер запрета.')
+        return web.json_response(service.remove_ban(request['user']['id'], int(raw_id)))
+
     async def digest(request):
         return web.json_response(service.manual_digest(request['user']['id'], (await body(request)).get('shift_date')))
 
@@ -101,6 +109,7 @@ def make_app(service, access, token):
                     web.get('/api/me', me), web.post('/api/visits', visits),
                     web.get('/api/bookings', bookings), web.post('/api/bookings', mutate),
                     web.put('/api/bookings/{id}', mutate), web.delete('/api/bookings/{id}', mutate),
+                    web.post('/api/admin/bans', bans), web.delete('/api/admin/bans/{id}', bans),
                     web.get('/api/admin/overview', admin), web.put('/api/admin/settings', settings),
                     web.put('/api/admin/access', block), web.post('/api/admin/digest', digest)])
     return app
