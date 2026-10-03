@@ -61,9 +61,13 @@ class Access:
     def remember(self, user):
         name = ' '.join(filter(None, [user.get('first_name', ''), user.get('last_name', '')])) or str(user['id'])
         with self.store.connect() as db:
-            db.execute('''INSERT INTO people(id,name,username,seen_at) VALUES (?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username,seen_at=excluded.seen_at''',
-                       (user['id'], name, (user.get('username') or ''), now_msk().isoformat()))
+            seen_at = now_msk().isoformat()
+            username = user.get('username') or ''
+            db.execute('INSERT OR IGNORE INTO people(id,name,username,seen_at) VALUES (?,?,?,?)',
+                       (user['id'], name, username, seen_at))
+            # Keep the owner's manual block when refreshing a user's profile.
+            db.execute('UPDATE people SET name=?,username=?,seen_at=? WHERE id=?',
+                       (name, username, seen_at, user['id']))
 
     async def require(self, user):
         if not await self.allowed(user):

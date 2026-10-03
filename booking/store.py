@@ -70,7 +70,9 @@ class Store:
 
     @staticmethod
     def put_setting(db, key, value):
-        db.execute('INSERT INTO settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, str(value)))
+        # Compatible with SQLite before 3.24 (Ubuntu 18.04). Both writes share a transaction.
+        db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)', (key, str(value)))
+        db.execute('UPDATE settings SET value=? WHERE key=?', (str(value), key))
 
     @staticmethod
     def rows(db, d):

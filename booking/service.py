@@ -52,10 +52,9 @@ class Service:
             texts = digest_texts(d, Store.rows(db, d))
             for text in texts:
                 Store.enqueue(db, chat_id, text, now)
-            db.execute('''INSERT INTO digests(chat_id,shift_date,checked_at,announced) VALUES (?,?,?,?)
-                ON CONFLICT(chat_id,shift_date) DO UPDATE SET checked_at=excluded.checked_at,
-                announced=MAX(digests.announced,excluded.announced)''',
-                       (chat_id, str(d), now.isoformat(), int(bool(texts))))
+            db.execute('INSERT OR IGNORE INTO digests(chat_id,shift_date) VALUES (?,?)', (chat_id, str(d)))
+            db.execute('UPDATE digests SET checked_at=?,announced=MAX(announced,?) WHERE chat_id=? AND shift_date=?',
+                       (now.isoformat(), int(bool(texts)), chat_id, str(d)))
 
     def schedule(self):
         with self.store.connect() as db:
@@ -202,8 +201,8 @@ class Service:
             for text in texts:
                 Store.enqueue(db, chat_id, text, now)
             if texts:
-                db.execute('''INSERT INTO digests(chat_id,shift_date,announced) VALUES (?,?,1)
-                    ON CONFLICT(chat_id,shift_date) DO UPDATE SET announced=1''', (chat_id, str(d)))
+                db.execute('INSERT OR IGNORE INTO digests(chat_id,shift_date) VALUES (?,?)', (chat_id, str(d)))
+                db.execute('UPDATE digests SET announced=1 WHERE chat_id=? AND shift_date=?', (chat_id, str(d)))
             Store.audit(db, actor, 'manual_digest', now, after={'date': str(d), 'messages': len(texts)})
             return {'queued': len(texts)}
 
@@ -222,9 +221,9 @@ class Service:
         if type(user_id) is not int or user_id <= 0 or type(blocked) is not bool:
             raise Problem('Некорректные данные доступа.')
         with self.store.connect() as db:
-            db.execute('''INSERT INTO people(id,name,blocked,seen_at) VALUES (?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET blocked=excluded.blocked''',
+            db.execute('INSERT OR IGNORE INTO people(id,name,blocked,seen_at) VALUES (?,?,?,?)',
                        (user_id, str(user_id), int(blocked), self.now().isoformat()))
+            db.execute('UPDATE people SET blocked=? WHERE id=?', (int(blocked), user_id))
             Store.audit(db, actor, 'block' if blocked else 'unblock', self.now(), after={'user_id': user_id})
 
     def visit(self, actor, session_id):
