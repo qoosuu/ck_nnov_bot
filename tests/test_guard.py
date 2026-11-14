@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
-from aiogram.methods import EditMessageText, RestrictChatMember
+from aiogram.methods import EditMessageText, RestrictChatMember, SendMessage
 from aiogram.types import Chat, ChatPermissions, Message, MessageEntity, Update, User
 from booking.store import Store
 from booking.domain import OWNER_ID
@@ -28,7 +28,10 @@ class FakeBot:
         self.delete_message=AsyncMock()
         self.answer_callback_query=AsyncMock()
         self.request=AsyncMock(return_value=True)
-    async def __call__(self,method):return await self.request(method)
+    async def __call__(self,method):
+        if isinstance(method,SendMessage):
+            return await self.send_message(**method.model_dump(exclude_unset=True))
+        return await self.request(method)
 
 
 class GuardTests(unittest.IsolatedAsyncioTestCase):
@@ -211,3 +214,43 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             'text':'/guard_off','entities':[{'type':'bot_command','offset':0,'length':10}]}}))
         self.assertIsNone(self.g.mode(-42));self.assertEqual(self.row()['state'],'done')
         await bot.session.close()
+
+    async def test_real_bot_onboarding_send_edit_and_restart_retry(self):
+        # Keep Bot methods real: a permissive send_message mock hid a signature error.
+        from aiogram.methods import GetChatMember, SendMessage, GetChat
+        bot=Bot('123456:test-token')
+        original_session=bot.session
+        calls=[]
+        async def transport(client,method,**kwargs):
+            calls.append(method)
+            if isinstance(method,GetChatMember):
+                return SimpleNamespace(status='member')
+            if isinstance(method,GetChat):
+                return SimpleNamespace(permissions=ChatPermissions(can_send_messages=True))
+            if isinstance(method,SendMessage):
+                self.assertEqual(method.model_dump()['ephemeral_message_parameters'],{'receiver_user_id':55})
+                return original_session.check_response(bot,method,200,json.dumps({'ok':True,'result':{
+                    'message_id':0,'ephemeral_message_id':99,'date':1000,'chat':{'id':-42,'type':'supergroup'}}})).result
+            return True
+        bot.session=AsyncMock(side_effect=transport)
+        self.g=Guard(self.store,bot,now=lambda:self.now)
+        try:
+            await self.g.joined(-42,self.user)
+            self.assertEqual(self.row()['message_id'],99)
+            await self.wrong()
+            self.assertIsInstance(calls[-1],EditEphemeral)
+            self.assertEqual(calls[-1].ephemeral_message_id,99)
+            self.assertEqual(sum(isinstance(c,SendMessage) for c in calls),1)
+            # Reproduce production state: already muted, pending message never sent.
+            self.g.save(self.row(),message_id=None,dirty=1)
+            deadline=self.row()['deadline']
+            self.g=Guard(Store(self.store.path),bot,now=lambda:self.now)
+            await self.g.tick()
+            self.assertEqual(self.row()['message_id'],99)
+            self.assertEqual(self.row()['dirty'],0)
+            self.assertEqual(self.row()['attempts'],1)
+            self.assertEqual(self.row()['deadline'],deadline)
+            await self.g.callback(self.query())
+            self.assertEqual(self.row()['state'],'done')
+        finally:
+            await original_session.close()

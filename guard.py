@@ -10,7 +10,7 @@ from typing import ClassVar
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.methods import TelegramMethod
+from aiogram.methods import TelegramMethod, SendMessage
 from aiogram.types import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
 from booking.domain import OWNER_ID
 
@@ -143,8 +143,14 @@ class Guard:
                 await self.cleanup(row)
             private = self.mode(row['chat_id']) == 'private'
             extra = {'ephemeral_message_parameters': {'receiver_user_id': row['user_id']}} if private else {}
-            message = await self.bot.send_message(chat_id=row['chat_id'], text=text, reply_markup=markup,
-                                                 parse_mode=None, **extra)
+            # Bot.send_message in aiogram 3.13 has a fixed signature. The method
+            # model accepts extra Bot API fields and serializes them via the session.
+            if private:
+                message = await self.bot(SendMessage(chat_id=row['chat_id'], text=text,
+                    reply_markup=markup, parse_mode=None, **extra))
+            else:
+                message = await self.bot.send_message(chat_id=row['chat_id'], text=text,
+                    reply_markup=markup, parse_mode=None)
             mid = getattr(message, 'ephemeral_message_id', None) if private else message.message_id
             if mid is None:
                 raise ValueError('Telegram did not return a verification message identifier')
