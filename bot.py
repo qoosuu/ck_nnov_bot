@@ -16,6 +16,7 @@ load_dotenv()
 
 import media
 from topics import TopicStore
+from guard import Guard, make_guard_router
 from booking.access import Access
 from booking.service import Service
 from booking.store import Store
@@ -36,7 +37,9 @@ async def main():
     store = Store(os.getenv('BOOKINGS_DB_PATH', str(ROOT / 'bookings.sqlite3')))
     access = Access(store, bot, url)
     service = Service(store, bot)
+    guard = Guard(store, bot)
     dp = Dispatcher(access=access)
+    dp.include_router(make_guard_router(guard))
     dp.include_router(make_router(service, access))
     dp.include_router(media.router)
     runner = web.AppRunner(make_app(service, access, os.environ['BOT_TOKEN']), access_log=None)
@@ -46,8 +49,8 @@ async def main():
         await web.TCPSite(runner, os.getenv('WEB_HOST', '127.0.0.1'), int(os.getenv('WEB_PORT', '8080'))).start()
         # Never advertise the app globally: menus are assigned per private chat.
         await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-        tasks = [asyncio.create_task(service.worker()), asyncio.create_task(access.refresh_menus())]
-        logging.info('Photo forwarding and booking modules started')
+        tasks = [asyncio.create_task(service.worker()), asyncio.create_task(access.refresh_menus()), asyncio.create_task(guard.worker())]
+        logging.info('Photo forwarding, booking and newcomer verification modules started')
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         for task in tasks:
